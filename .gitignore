@@ -1,0 +1,11 @@
+/.env
+/.venv/
+/.vscode/
+/build/
+/dist/
+/output/
+*.egg-info/
+pyproject.toml
+*.log
+*.job
+!example.job
