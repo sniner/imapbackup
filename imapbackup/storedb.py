@@ -202,7 +202,7 @@ class StoreDatabaseConnection(DatabaseConnection):
             """)
 
             self.execute("""
-                CREATE VIEW IF NOT EXISTS v_exchange_duplicates AS
+                CREATE VIEW IF NOT EXISTS v_duplicates AS
                 SELECT DISTINCT
                 msg.message_id,
                 msg.email_id,

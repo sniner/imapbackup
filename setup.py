@@ -7,7 +7,7 @@ setup(
 
     # Metadata
     name = "imapbackup",
-    version = "0.1.0",
+    version = "0.1.1",
     author = "Stefan Schönberger",
     author_email = "mail@sniner.dev",
     description = "Export and backup tool for IMAP mailboxes",
