@@ -9,3 +9,5 @@ pyproject.toml
 *.log
 *.job
 !example.job
+
+/archive
