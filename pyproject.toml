@@ -1,0 +1,33 @@
+[project]
+name = "imapbackup"
+version = "0.1.1"
+description = "Export and backup tool for IMAP mailboxes"
+authors = [{ name = "Stefan Schönberger", email = "mail@sniner.dev" }]
+requires-python = ">=3.9"
+dependencies = [
+    "imapclient",
+    "pyyaml",
+]
+
+[dependency-groups]
+dev = [
+    "pylint",
+    "pytest",
+    "imapbackup",
+]
+
+[tool.uv]
+package = true
+
+[project.scripts]
+ib-mailbox = "imapbackup.cli.mailbox:main"
+ib-archive = "imapbackup.cli.archive:main"
+ib-copy    = "imapbackup.cli.copy:main"
+
+#[[tool.uv.index]]
+#name = "pypi"
+#url = "https://pypi.org/simple"
+
+#[tool.uv.sources]
+#imapbackup = { path = ".", editable = true }
+

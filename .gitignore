@@ -5,7 +5,7 @@
 /dist/
 /output/
 *.egg-info/
-pyproject.toml
+__pycache__/
 *.log
 *.job
 !example.job
