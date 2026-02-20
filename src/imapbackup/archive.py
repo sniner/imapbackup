@@ -1,24 +1,16 @@
-import email.parser
-import email.policy
-import email.utils
-import gzip
-import hashlib
-import io
+from __future__ import annotations
+
 import logging
 import os
 import pathlib
-import sys
-
-from typing import Union, Tuple, List
 
 from imapbackup import cas, mailutils
-
 
 log = logging.getLogger(__name__)
 
 
 class MailArchive:
-    def __init__(self, root_dir:pathlib.Path):
+    def __init__(self, root_dir: pathlib.Path):
         self.root_dir = root_dir or "."
 
     def walk(self):
@@ -27,7 +19,7 @@ class MailArchive:
             for eml in [pathlib.Path(path, f) for f in files if f.endswith(".eml")]:
                 yield eml
 
-    def archive_to_cas(self, store:cas, compression=False, move=False):
+    def archive_to_cas(self, store: cas.ContentAdressedStorage, compression=False, move=False):
         for eml in self.walk():
             try:
                 with open(eml, "rb") as f:
@@ -56,7 +48,7 @@ class MailArchive:
                         addrs.add(addr)
                         yield ">", addr
 
-    def stats(self) -> Tuple[int, int]:
+    def stats(self) -> tuple[int, int]:
         """Anzahl Mails und die Gesamtgröße im Export-Archiv bestimmen."""
         size = 0
         count = 0
@@ -67,14 +59,13 @@ class MailArchive:
 
 
 class DocuwareMailArchive(MailArchive):
-
     def walk(self):
         """E-Mail-Dateien im Docuware-Archiv lokalisieren."""
         for path, _, files in os.walk(self.root_dir):
             eml = [pathlib.Path(path, f) for f in files if f.endswith(".eml")]
-            if len(eml)>1:
+            if len(eml) > 1:
                 eml_file = max([(f.stat().st_size, f) for f in eml], key=lambda x: x[0])[1]
-            elif len(eml)==1:
+            elif len(eml) == 1:
                 eml_file = eml[0]
             else:
                 continue

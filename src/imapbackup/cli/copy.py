@@ -2,68 +2,66 @@ import argparse
 import logging
 import pathlib
 import sys
-import yaml
 
-from imapbackup import jobs, conf
+from imapbackup import conf, jobs
 
 log = logging.getLogger(__name__)
 
 
 def parse_arguments():
     parser = argparse.ArgumentParser(
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        description=__doc__)
+        formatter_class=argparse.RawDescriptionHelpFormatter, description=__doc__
+    )
 
     parser.add_argument(
         "--logfile",
         type=pathlib.Path,
-        help="Log file path"
+        help="Log file path",
     )
     parser.add_argument(
         "--verbose",
         action="store_true",
-        help="Set log level to DEBUG"
+        help="Set log level to DEBUG",
     )
 
     subparsers = parser.add_subparsers(dest="subcommand")
 
     list_parser = subparsers.add_parser(
-        "list", description="Show available messages in source mailbox"
+        "list",
+        description="Show available messages in source mailbox",
     )
     list_parser.add_argument(
         "--job",
         type=pathlib.Path,
         required=True,
-        help="YAML file with job descriptions"
+        help="YAML file with job descriptions",
     )
 
     backup_parser = subparsers.add_parser(
-        "copy", description="Copy mails from source to destination mailbox"
+        "copy",
+        description="Copy mails from source to destination mailbox",
     )
     backup_parser.add_argument(
         "--job",
         type=pathlib.Path,
         required=True,
-        help="YAML file with job descriptions"
+        help="YAML file with job descriptions",
     )
     backup_parser.add_argument(
         "--idle",
         action="store_true",
-        help="Keep connected to server"
+        help="Keep connected to server",
     )
 
     return parser.parse_args()
 
+
 def setup_logger(loglevel=logging.INFO, logfile=None):
-    logger_format = '%(asctime)s %(levelname)s -- %(message)s'
+    logger_format = "%(asctime)s %(levelname)s -- %(message)s"
     if logfile:
-        logging.basicConfig(filename=logfile,
-                            level=loglevel,
-                            format=logger_format)
+        logging.basicConfig(filename=logfile, level=loglevel, format=logger_format)
     else:
-        logging.basicConfig(stream=sys.stderr,
-                            level=loglevel,
-                            format=logger_format)
+        logging.basicConfig(stream=sys.stderr, level=loglevel, format=logger_format)
     return logging.getLogger(__name__)
 
 
@@ -72,7 +70,9 @@ def main():
 
     args = parse_arguments()
 
-    log = setup_logger(logfile=args.logfile, loglevel=logging.DEBUG if args.verbose else logging.INFO)
+    log = setup_logger(
+        logfile=args.logfile, loglevel=logging.DEBUG if args.verbose else logging.INFO
+    )
     logging.getLogger("imapclient").setLevel(logging.WARNING)
     logging.getLogger("imapbackup.cas").setLevel(logging.INFO)
     log.info("START")
@@ -82,9 +82,13 @@ def main():
         source = conf.find(config, "role", "source")
         destination = conf.find(config, "role", "destination")
 
-        if args.subcommand=="list":
+        if source is None or destination is None:
+            log.error("Job missing source or destination role")
+            return
+
+        if args.subcommand == "list":
             jobs.folder_list(source)
-        elif args.subcommand=="copy":
+        elif args.subcommand == "copy":
             log.info(f"Copy job: {source.get('name', '?')} -> {destination.get('name', '?')}")
             jobs.copy(source, destination, idle=args.idle)
     except Exception as exc:
@@ -100,4 +104,3 @@ if __name__ == "__main__":
 
 
 # vim: set et sw=4 ts=4:
-

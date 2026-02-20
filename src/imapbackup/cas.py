@@ -1,25 +1,31 @@
+from __future__ import annotations
+
+import collections.abc
 import gzip
 import hashlib
 import io
 import logging
 import os
 import pathlib
-import sys
-
-from typing import Optional, Union, Tuple
-
 
 log = logging.getLogger(__name__)
 
 
 class ContentAdressedStorage:
-    def __init__(self, root_dir=".", suffix:Optional[str]=None, depth:int=2, compression:bool=False, hashfactory:Optional[callable]=None):
+    def __init__(
+        self,
+        root_dir: str | pathlib.Path = ".",
+        suffix: str | None = None,
+        depth: int = 2,
+        compression: bool = False,
+        hashfactory: collections.abc.Callable | None = None,
+    ):
         self.root_dir = pathlib.Path(root_dir)
         pathlib.Path.mkdir(self.root_dir, parents=True, exist_ok=True)
         self.collisions_dir = pathlib.Path(self.root_dir, "collisions")
         self.compression = compression or False
         self.hashfactory = hashfactory if hashfactory else hashlib.sha384
-        self.depth = depth if depth>=0 else 2
+        self.depth = depth if depth >= 0 else 2
         self.suffix = suffix
         self.blocksize = 16384
         # TODO: Compression is not fully implemented yet
@@ -31,7 +37,7 @@ class ContentAdressedStorage:
         return self._suffix
 
     @suffix.setter
-    def suffix(self, value:str):
+    def suffix(self, value: str | None):
         if value:
             self._suffix = value.strip()
             if not self._suffix.startswith("."):
@@ -39,15 +45,15 @@ class ContentAdressedStorage:
         else:
             self._suffix = ".dat"
 
-    def _subdirs(self, hashval: str) -> str:
-        if len(hashval)<self.depth*2:
-            raise ValueError(f"hash string to short, {self.depth*2} characters required")
-        return [hashval[i:i+2] for i in range(0, self.depth*2, 2)]
+    def _subdirs(self, hashval: str) -> list[str]:
+        if len(hashval) < self.depth * 2:
+            raise ValueError(f"hash string to short, {self.depth * 2} characters required")
+        return [hashval[i : i + 2] for i in range(0, self.depth * 2, 2)]
 
-    def _path(self, hashval: str) -> str:
+    def _path(self, hashval: str) -> pathlib.Path:
         return pathlib.Path(self.root_dir, *self._subdirs(hashval))
 
-    def _reader(self, data:Union[io.IOBase, bytes]) -> io.IOBase:
+    def _reader(self, data: io.IOBase | bytes) -> io.IOBase:
         if isinstance(data, bytes):
             reader = io.BytesIO(data)
         elif isinstance(data, io.IOBase):
@@ -63,28 +69,28 @@ class ContentAdressedStorage:
             raise TypeError("instance of bytes or io.IOBase expected")
         return reader
 
-    def _hashval(self, reader:io.IOBase) -> str:
+    def _hashval(self, reader: io.IOBase) -> str:
         m = self.hashfactory()
         while True:
             block = reader.read(self.blocksize or 4096)
-            if block is None or len(block)==0:
+            if block is None or len(block) == 0:
                 break
             m.update(block)
         reader.seek(0)
         return m.hexdigest()
 
-    def _filesize(self, reader:io.IOBase) -> int:
+    def _filesize(self, reader: io.IOBase) -> int:
         pos = reader.tell()
         size = reader.seek(0, io.SEEK_END)
         reader.seek(pos)
         return size
 
-    def _destination(self, hashval:str) -> Tuple[pathlib.Path, str]:
+    def _destination(self, hashval: str) -> tuple[pathlib.Path, str]:
         filename = hashval + self.suffix + (".gz" if self.compression else "")
         path = self._path(hashval)
         return path, filename
 
-    def add(self, data:Union[io.IOBase, bytes]) -> Tuple[str, str, pathlib.Path]:
+    def add(self, data: io.IOBase | bytes) -> tuple[str, str, pathlib.Path]:
         reader = self._reader(data)
         hashval = self._hashval(reader)
         path, filename = self._destination(hashval)
@@ -110,7 +116,7 @@ class ContentAdressedStorage:
             with iomod.open(tmp_file, "wb") as f:
                 while True:
                     block = reader.read(self.blocksize or 4096)
-                    if block is None or len(block)==0:
+                    if block is None or len(block) == 0:
                         break
                     f.write(block)
         except Exception as exc:
@@ -123,7 +129,9 @@ class ContentAdressedStorage:
         log.debug(f"{file}: new entry")
         return "NEW", hashval, file
 
-    def locate(self, data:Union[io.IOBase, bytes, str], exists:bool=False) -> Optional[pathlib.Path]:
+    def locate(
+        self, data: io.IOBase | bytes | str, exists: bool = False
+    ) -> pathlib.Path | None:
         if isinstance(data, str):
             hashval = data
         else:

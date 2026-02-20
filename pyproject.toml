@@ -1,9 +1,9 @@
 [project]
 name = "imapbackup"
-version = "0.1.2"
+version = "0.2.0"
 description = "Export and backup tool for IMAP mailboxes"
 authors = [{ name = "Stefan Schönberger", email = "mail@sniner.dev" }]
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 dependencies = [
     "imapclient",
     "pyyaml",
@@ -14,10 +14,24 @@ dev = [
     "pylint",
     "pytest",
     "imapbackup",
+    "basedpyright>=1.38.1",
 ]
 
 [tool.uv]
 package = true
+
+[tool.pyright]
+typeCheckingMode = "standard"
+useLibraryCodeForTypes = true
+venvPath = "."
+venv = ".venv"
+
+[tool.ruff]
+line-length = 96
+ignore = ["E402"]
+
+[tool.ruff.lint]
+per-file-ignores = { "__init__.py" = ["F401"] }
 
 [project.scripts]
 ib-mailbox = "imapbackup.cli.mailbox:main"
@@ -31,3 +45,5 @@ ib-copy    = "imapbackup.cli.copy:main"
 #[tool.uv.sources]
 #imapbackup = { path = ".", editable = true }
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]

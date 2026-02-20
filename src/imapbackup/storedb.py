@@ -5,10 +5,9 @@ import logging
 import pathlib
 import sqlite3
 import threading
-
-from datetime import datetime
 from contextlib import contextmanager
-from typing import Any, Optional, List, Union
+from datetime import datetime
+from typing import Any
 
 log = logging.getLogger(__name__)
 
@@ -18,7 +17,7 @@ class RollbackException(Exception):
 
 
 class StoreDatabase:
-    def __init__(self, path:Union[pathlib.Path,str]):
+    def __init__(self, path: pathlib.Path | str):
         self.dbconn = None
         self.client = None
         self.path = path or "metadata.db"
@@ -36,8 +35,9 @@ class StoreDatabase:
             self.dbconn = None
             self.client = None
 
-class DatabaseConnection():
-    def __init__(self, dbconn:sqlite3.Connection):
+
+class DatabaseConnection:
+    def __init__(self, dbconn: sqlite3.Connection):
         self.dbconn = dbconn
         self.lock = threading.RLock()
         self._transaction = 0
@@ -45,26 +45,27 @@ class DatabaseConnection():
     @contextmanager
     def transaction(self):
         with self.lock:
-            outer = self._transaction==0
+            outer = self._transaction == 0
             self._transaction += 1
             try:
                 yield self
                 if outer:
                     self.dbconn.commit()
-            except:
+            except Exception as exc:
+                log.error("Transaction failed: %s", exc)
                 if outer:
                     self.dbconn.rollback()
                 raise
             finally:
                 self._transaction -= 1
 
-    def execute(self, statement:str, *args:Any) -> sqlite3.Cursor:
+    def execute(self, statement: str, *args: Any) -> sqlite3.Cursor:
         with self.lock:
             return self.dbconn.execute(statement, *args)
 
     def commit(self):
         with self.lock:
-            if self._transaction==0:
+            if self._transaction == 0:
                 self.dbconn.commit()
 
     def rollback(self):
@@ -75,12 +76,11 @@ class DatabaseConnection():
 
 
 class StoreDatabaseConnection(DatabaseConnection):
-
     def setup(self):
         with self.transaction():
             self.execute("""
                 CREATE TABLE IF NOT EXISTS mailbox (
-                mailbox_id INTEGER PRIMARY KEY, 
+                mailbox_id INTEGER PRIMARY KEY,
                 name TEXT NOT NULL,
                 UNIQUE(name) ON CONFLICT IGNORE)
             """)
@@ -132,8 +132,12 @@ class StoreDatabaseConnection(DatabaseConnection):
                 FOREIGN KEY(mailbox_id) REFERENCES mailbox(mailbox_id),
                 UNIQUE(message_id, mailbox_id) ON CONFLICT IGNORE)
             """)
-            self.execute("CREATE INDEX IF NOT EXISTS idx_message_mailbox_1 ON message_mailbox(message_id)")
-            self.execute("CREATE INDEX IF NOT EXISTS idx_message_mailbox_2 ON message_mailbox(mailbox_id)")
+            self.execute(
+                "CREATE INDEX IF NOT EXISTS idx_message_mailbox_1 ON message_mailbox(message_id)"
+            )
+            self.execute(
+                "CREATE INDEX IF NOT EXISTS idx_message_mailbox_2 ON message_mailbox(mailbox_id)"
+            )
 
             self.execute("""
                 CREATE TABLE IF NOT EXISTS message_label (
@@ -143,8 +147,12 @@ class StoreDatabaseConnection(DatabaseConnection):
                 FOREIGN KEY(label_id) REFERENCES label(label_id),
                 UNIQUE(message_id, label_id) ON CONFLICT IGNORE);
             """)
-            self.execute("CREATE INDEX IF NOT EXISTS idx_message_label_1 ON message_label(message_id)")
-            self.execute("CREATE INDEX IF NOT EXISTS idx_message_label_2 ON message_label(label_id)")
+            self.execute(
+                "CREATE INDEX IF NOT EXISTS idx_message_label_1 ON message_label(message_id)"
+            )
+            self.execute(
+                "CREATE INDEX IF NOT EXISTS idx_message_label_2 ON message_label(label_id)"
+            )
 
             self.execute("""
                 CREATE TABLE IF NOT EXISTS message_sender (
@@ -154,8 +162,12 @@ class StoreDatabaseConnection(DatabaseConnection):
                 FOREIGN KEY(address_id) REFERENCES address(address_id),
                 UNIQUE(message_id, address_id) ON CONFLICT IGNORE)
             """)
-            self.execute("CREATE INDEX IF NOT EXISTS idx_message_sender_1 ON message_sender(message_id)")
-            self.execute("CREATE INDEX IF NOT EXISTS idx_message_sender_2 ON message_sender(address_id)")
+            self.execute(
+                "CREATE INDEX IF NOT EXISTS idx_message_sender_1 ON message_sender(message_id)"
+            )
+            self.execute(
+                "CREATE INDEX IF NOT EXISTS idx_message_sender_2 ON message_sender(address_id)"
+            )
 
             self.execute("""
                 CREATE TABLE IF NOT EXISTS message_recipient (
@@ -165,9 +177,13 @@ class StoreDatabaseConnection(DatabaseConnection):
                 FOREIGN KEY(address_id) REFERENCES address(address_id),
                 UNIQUE(message_id, address_id) ON CONFLICT IGNORE)
             """)
-            self.execute("CREATE INDEX IF NOT EXISTS idx_message_recipient_1 ON message_sender(message_id)")
-            self.execute("CREATE INDEX IF NOT EXISTS idx_message_recipient_2 ON message_sender(address_id)")
-            
+            self.execute(
+                "CREATE INDEX IF NOT EXISTS idx_message_recipient_1 ON message_sender(message_id)"
+            )
+            self.execute(
+                "CREATE INDEX IF NOT EXISTS idx_message_recipient_2 ON message_sender(address_id)"
+            )
+
             self.execute("""
                 CREATE TABLE IF NOT EXISTS snapshot (
                 snapshot_id INTEGER PRIMARY KEY,
@@ -217,103 +233,166 @@ class StoreDatabaseConnection(DatabaseConnection):
             """)
 
     @functools.lru_cache
-    def add_mailbox(self, mailbox_name:str) -> int:
+    def add_mailbox(self, mailbox_name: str) -> int:
         with self.transaction():
             self.execute("INSERT OR IGNORE INTO mailbox(name) VALUES (?)", (mailbox_name,))
-            return self.execute("SELECT mailbox_id FROM mailbox WHERE name=?", (mailbox_name,)).fetchone()[0]
+            return self.execute(
+                "SELECT mailbox_id FROM mailbox WHERE name=?", (mailbox_name,)
+            ).fetchone()[0]
 
     @functools.lru_cache
-    def add_label(self, label_name:str) -> int:
+    def add_label(self, label_name: str) -> int:
         with self.transaction():
             self.execute("INSERT OR IGNORE INTO label(name) VALUES (?)", (label_name,))
-            return self.execute("SELECT label_id FROM label WHERE name=?", (label_name,)).fetchone()[0]
+            return self.execute(
+                "SELECT label_id FROM label WHERE name=?", (label_name,)
+            ).fetchone()[0]
 
     @functools.lru_cache
-    def add_address(self, address:str) -> int:
+    def add_address(self, address: str) -> int:
         with self.transaction():
             self.execute("INSERT OR IGNORE INTO address(address) VALUES (?)", (address,))
-            return self.execute("SELECT address_id FROM address WHERE address=?", (address,)).fetchone()[0]
+            return self.execute(
+                "SELECT address_id FROM address WHERE address=?", (address,)
+            ).fetchone()[0]
 
     @functools.lru_cache
-    def add_subject(self, subject:str) -> int:
+    def add_subject(self, subject: str) -> int:
         with self.transaction():
             self.execute("INSERT OR IGNORE INTO subject(text) VALUES (?)", (subject,))
-            return self.execute("SELECT subject_id FROM subject WHERE text=?", (subject,)).fetchone()[0]
+            return self.execute(
+                "SELECT subject_id FROM subject WHERE text=?", (subject,)
+            ).fetchone()[0]
 
-    def add_message(self, store_id:str, email_id:str, date:datetime, subject:str, mailbox_id:int=None) -> int:
+    def add_message(
+        self,
+        store_id: str,
+        email_id: str,
+        date: datetime | None,
+        subject: str,
+        mailbox_id: int | None = None,
+    ) -> int:
         with self.transaction():
             subject_id = self.add_subject(subject)
             self.execute(
                 "INSERT OR IGNORE INTO message(store_id, email_id, date, subject_id) VALUES (?, ?, ?, ?)",
-                (store_id, email_id, date.isoformat() if date else None, subject_id))
-            msg_id = self.execute("SELECT message_id FROM message WHERE store_id=?", (store_id,)).fetchone()[0]
+                (store_id, email_id, date.isoformat() if date else None, subject_id),
+            )
+            msg_id = self.execute(
+                "SELECT message_id FROM message WHERE store_id=?", (store_id,)
+            ).fetchone()[0]
             if mailbox_id is not None:
                 self.assign_message_to_mailbox(msg_id, mailbox_id)
             return msg_id
 
-    def assign_message_to_mailbox(self, message_id:int, mailbox_id:int):
+    def assign_message_to_mailbox(self, message_id: int, mailbox_id: int):
         with self.transaction():
-            self.execute("INSERT OR IGNORE INTO message_mailbox(message_id, mailbox_id) VALUES (?, ?)", (message_id, mailbox_id))
+            self.execute(
+                "INSERT OR IGNORE INTO message_mailbox(message_id, mailbox_id) VALUES (?, ?)",
+                (message_id, mailbox_id),
+            )
 
-    def get_message(self, mailbox_id:int, store_id:str) -> int:
-        return self.execute("SELECT message_id FROM message WHERE mailbox_id=? AND store_id=?", (mailbox_id, store_id,)).fetchone()[0]
+    def get_message(self, mailbox_id: int, store_id: str) -> int:
+        return self.execute(
+            "SELECT message_id FROM message WHERE mailbox_id=? AND store_id=?",
+            (
+                mailbox_id,
+                store_id,
+            ),
+        ).fetchone()[0]
 
-    def get_message_labels(self, message_id:int) -> List[str]:
-        return [row[0] for row in self.execute("""
+    def get_message_labels(self, message_id: int) -> list[str]:
+        return [
+            row[0]
+            for row in self.execute(
+                """
             SELECT label.name from message_label JOIN label USING (label_id) WHERE message_id=?
-            """, (message_id,)).fetchall()]
+            """,
+                (message_id,),
+            ).fetchall()
+        ]
 
-    def get_message_label_ids(self, message_id:int) -> List[int]:
-        return [row[0] for row in self.execute("SELECT label_id from message_label WHERE message_id=?", (message_id,)).fetchall()]
+    def get_message_label_ids(self, message_id: int) -> list[int]:
+        return [
+            row[0]
+            for row in self.execute(
+                "SELECT label_id from message_label WHERE message_id=?", (message_id,)
+            ).fetchall()
+        ]
 
-    def add_message_labels(self, message_id:int, *label_names:List[str]):
+    def add_message_labels(self, message_id: int, *label_names: str):
         for label in label_names:
             label_id = self.add_label(label)
-            self.execute("INSERT OR IGNORE INTO message_label(message_id, label_id) VALUES (?, ?)", (message_id, label_id))
+            self.execute(
+                "INSERT OR IGNORE INTO message_label(message_id, label_id) VALUES (?, ?)",
+                (message_id, label_id),
+            )
 
-    def update_message_labels(self, message_id:int, *label_names:List[str]):
+    def update_message_labels(self, message_id: int, *label_names: str):
         with self.transaction():
             current = set()
             for label in label_names:
                 label_id = self.add_label(label)
                 current.add(label_id)
-                self.execute("INSERT OR IGNORE INTO message_label(message_id, label_id) VALUES (?, ?)", (message_id, label_id))
+                self.execute(
+                    "INSERT OR IGNORE INTO message_label(message_id, label_id) VALUES (?, ?)",
+                    (message_id, label_id),
+                )
             for label_id in self.get_message_label_ids(message_id):
                 if label_id not in current:
-                    self.execute("DELETE FROM message_label WHERE message_id=? AND label_id=?", (message_id, label_id))
+                    self.execute(
+                        "DELETE FROM message_label WHERE message_id=? AND label_id=?",
+                        (message_id, label_id),
+                    )
 
-    def add_message_sender(self, message_id:int, *sender:List[str]):
+    def add_message_sender(self, message_id: int, *sender: str):
         with self.transaction():
             for addr in sender:
                 addr_id = self.add_address(addr)
-                self.execute("INSERT OR IGNORE INTO message_sender(message_id, address_id) VALUES (?, ?)", (message_id, addr_id))
+                self.execute(
+                    "INSERT OR IGNORE INTO message_sender(message_id, address_id) VALUES (?, ?)",
+                    (message_id, addr_id),
+                )
 
-    def add_message_recipients(self, message_id:int, *recipients:List[str]):
+    def add_message_recipients(self, message_id: int, *recipients: str):
         with self.transaction():
             for addr in recipients:
                 addr_id = self.add_address(addr)
-                self.execute("INSERT OR IGNORE INTO message_recipient(message_id, address_id) VALUES (?, ?)", (message_id, addr_id))
+                self.execute(
+                    "INSERT OR IGNORE INTO message_recipient(message_id, address_id) VALUES (?, ?)",
+                    (message_id, addr_id),
+                )
 
-    def get_snapshot(self, mailbox_id:int, label_id:int) -> Optional[dict]:
-        row = self.execute("SELECT * FROM snapshot WHERE mailbox_id=? AND label_id=?", (mailbox_id, label_id)).fetchone()
+    def get_snapshot(self, mailbox_id: int, label_id: int) -> dict | None:
+        row = self.execute(
+            "SELECT * FROM snapshot WHERE mailbox_id=? AND label_id=?", (mailbox_id, label_id)
+        ).fetchone()
         return dict(row) if row else None
 
-    def set_snapshot(self, mailbox_id:int, label_id:int, date:datetime=None):
+    def set_snapshot(self, mailbox_id: int, label_id: int, date: datetime | None = None):
         if date is None:
             date = datetime.now()
         isodate = date.isoformat()
         # NB: does work because of ON CONFLICT REPLACE
         with self.transaction():
-            self.execute("INSERT INTO snapshot(mailbox_id, label_id, date) VALUES (?, ?, ?)", (mailbox_id, label_id, isodate))
+            self.execute(
+                "INSERT INTO snapshot(mailbox_id, label_id, date) VALUES (?, ?, ?)",
+                (mailbox_id, label_id, isodate),
+            )
 
-    def delete_snapshot(self, mailbox_id:int, label_id:Optional[int]=None):
+    def delete_snapshot(self, mailbox_id: int, label_id: int | None = None):
         with self.transaction():
             if label_id:
-                self.execute("DELETE FROM snapshot WHERE mailbox_id=? AND label_id=?", (mailbox_id, label_id))
+                self.execute(
+                    "DELETE FROM snapshot WHERE mailbox_id=? AND label_id=?",
+                    (mailbox_id, label_id),
+                )
             else:
                 self.execute("DELETE FROM snapshot WHERE mailbox_id=?", (mailbox_id,))
 
-    def get_snapshot_date(self, mailbox_id:int, label_id:int, default:Optional[datetime]=None) -> datetime:
+    def get_snapshot_date(
+        self, mailbox_id: int, label_id: int, default: datetime | None = None
+    ) -> datetime | None:
         s = self.get_snapshot(mailbox_id, label_id)
         if s:
             return datetime.fromisoformat(s["date"])
@@ -321,10 +400,16 @@ class StoreDatabaseConnection(DatabaseConnection):
             return default
 
 
-if __name__=="__main__":
+if __name__ == "__main__":
     with StoreDatabase("./test.db") as db:
         mb = db.add_mailbox("Schlumpf")
-        msg = db.add_message("12345678901234567890", "<hulla@example.org>", datetime.now(), mailbox_id=mb, subject="Test")
+        msg = db.add_message(
+            "12345678901234567890",
+            "<hulla@example.org>",
+            datetime.now(),
+            mailbox_id=mb,
+            subject="Test",
+        )
         db.add_message_labels(msg, "Private", "Must read")
         db.add_message_sender(msg, "me@example.com")
         db.add_message_recipients(msg, "friend@example.com", "foo.bar@gmail.com")

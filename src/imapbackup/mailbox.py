@@ -1,20 +1,17 @@
 from __future__ import annotations
 
-import email.parser
-import email.policy
+import collections.abc
 import functools
 import logging
 import re
 import ssl
+import sys
 import threading
 import time
-
-from contextlib import contextmanager
 from datetime import datetime, timedelta
-from typing import List, Tuple, Any, Optional, Callable, Generator
+from typing import Any
 
 import imapclient
-import sys
 
 if sys.version_info >= (3, 14):
     # Monkeypatch for imapclient 3.1.0 on Python 3.14:
@@ -22,51 +19,55 @@ if sys.version_info >= (3, 14):
     # Removing the open method makes it fallback to imaplib.IMAP4.open which works fine.
     try:
         import imapclient.imap4
-        if hasattr(imapclient.imap4.IMAP4WithTimeout, 'open'):
+
+        if hasattr(imapclient.imap4.IMAP4WithTimeout, "open"):
             del imapclient.imap4.IMAP4WithTimeout.open
     except Exception:
         pass
 
-from imapbackup import cas, utils, mailutils
+from imapbackup import cas, mailutils, utils
 
 log = logging.getLogger(__name__)
+
 
 class MailboxError(Exception):
     pass
 
-class MailboxClient:
 
-    def __init__(self, mailbox:Mailbox):
+class MailboxClient:
+    def __init__(self, mailbox: Mailbox):
         self.mbox = mailbox
-        self.conn = mailbox._conn
+        self.conn: imapclient.IMAPClient = mailbox._conn  # type: ignore
         self.job_name = mailbox.job_name
         self.lock = threading.RLock()
         self.capabilities = self.conn.capabilities()
         self.delete_after_export = self.mbox.job.get("delete_after_export", False)
         self.exchange_journal = self.mbox.job.get("exchange_journal", False)
-        self.gmail = functools.reduce(lambda acc, c: acc or c.startswith(b"X-GM-"), self.capabilities, False)
+        self.gmail = functools.reduce(
+            lambda acc, c: acc or c.startswith(b"X-GM-"), self.capabilities, False
+        )
         self.move_cap = b"MOVE" in self.capabilities
         self.trash_folder = self.mbox.job.get("trash_folder")
         self.error_folder = self.mbox.job.get("error_folder") if self.move_cap else None
 
     @staticmethod
-    def _isfoldertype(folder, *flags:List[str]):
+    def _isfoldertype(folder: tuple, *flags: str):
         folderflags = set(folder[0])
-        flags = [(b'\\'+f.encode(), f) for f in [f.capitalize().capitalize() for f in flags]]
-        for flag in flags:
+        bflags = [(b"\\" + f.encode(), f) for f in [f.capitalize().capitalize() for f in flags]]
+        for flag in bflags:
             if flag[0] in folderflags:
                 return flag[1]
         return None
 
     @staticmethod
-    def _isfoldername(folder, *patterns:List[str]):
+    def _isfoldername(folder: tuple, *patterns: str):
         foldername = folder[2]
         for pattern in patterns:
             if re.match(pattern, foldername):
                 return pattern
         return None
 
-    def folders(self) -> Generator[str, None, None]:
+    def folders(self) -> collections.abc.Generator[str, None, None]:
         with self.lock:
             for folder in self.conn.list_folders():
                 if self._isfoldertype(folder, *self.mbox.job.get("ignore_folder_flags", [])):
@@ -75,15 +76,15 @@ class MailboxClient:
                     continue
                 yield folder
 
-    def select_folder(self, folder_name:str, readonly:bool=True):
+    def select_folder(self, folder_name: str, readonly: bool = True):
         if not self.conn.folder_exists(folder_name):
             self.conn.create_folder(folder_name)
         self.conn.select_folder(folder_name, readonly=readonly)
 
-    def watch_folder(self, folder_name:str, timeout:int=20, break_out:int=3600):
+    def watch_folder(self, folder_name: str, timeout: int = 20, break_out: int = 3600):
         with self.lock:
             start_time = time.monotonic()
-            while time.monotonic()-start_time<break_out:
+            while time.monotonic() - start_time < break_out:
                 self.select_folder(folder_name)
                 self.conn.idle()
                 responses = None
@@ -95,12 +96,14 @@ class MailboxClient:
                         self.conn.idle_done()
                         break
                     now = time.monotonic()
-                    if now-idle_time < timeout/2:
+                    if now - idle_time < timeout / 2:
                         # Workaround: idle_check() does not raise an exception when
                         # connection breaks, instead it returns immediately.
-                        log.warning("%s::%s: IDLE connection broken", self.job_name, folder_name)
+                        log.warning(
+                            "%s::%s: IDLE connection broken", self.job_name, folder_name
+                        )
                         return
-                    if now-start_time >= break_out:
+                    if now - start_time >= break_out:
                         self.conn.idle_done()
                         return
                 yield folder_name, responses
@@ -108,13 +111,22 @@ class MailboxClient:
             #     log.info("%s::%s: Leaving IDLE loop", self.job_name, folder_name)
             #     self.conn.idle_done()
 
-    def _walk_folder(self, folder_name:str, message_ids:List[int], chunk_size:int=10, delete:bool=False) -> Generator[Tuple[int,bytes,datetime], None, None]:
+    def _walk_folder(
+        self,
+        folder_name: str,
+        message_ids: list[int],
+        chunk_size: int = 10,
+        delete: bool = False,
+    ) -> collections.abc.Generator[tuple[int, bytes, datetime | None], None, None]:
         for msg_ids in utils.chunks(message_ids, chunk_size):
             msg_ids_str = ", ".join([str(i) for i in msg_ids])
             log.debug("%s::%s: fetching %s", self.job_name, folder_name, msg_ids_str)
+            msg_id = None
             try:
-                for msg_id, msg_data in self.conn.fetch(msg_ids, ["INTERNALDATE", "RFC822"]).items():
-                    yield msg_id, msg_data[b"RFC822"], msg_data[b"INTERNALDATE"]
+                for msg_id, msg_data in self.conn.fetch(
+                    msg_ids, ["INTERNALDATE", "RFC822"]
+                ).items():
+                    yield msg_id, msg_data[b"RFC822"], msg_data[b"INTERNALDATE"]  # type: ignore
             except Exception as exc:
                 log.error("%s::%s[%s]: %s", self.job_name, folder_name, msg_id, exc)
             else:
@@ -122,7 +134,7 @@ class MailboxClient:
                     log.debug("%s::%s: deleting %s", self.job_name, folder_name, msg_ids_str)
                     self.conn.delete_messages(msg_ids)
 
-    def _collect_metadata(self, folder_name:str, msg_id:Any, store_id:str, msg:bytes):
+    def _collect_metadata(self, folder_name: str, msg_id: Any, store_id: str, msg: bytes):
         if self.gmail:
             labels = self.conn.get_gmail_labels(msg_id)
             labels = labels.get(msg_id, [])
@@ -144,7 +156,7 @@ class MailboxClient:
             "subject": mailutils.subject(header),
         }
 
-    def _clear_folder(self, folder_name:str):
+    def _clear_folder(self, folder_name: str):
         with self.lock:
             try:
                 self.conn.select_folder(folder_name, readonly=False)
@@ -160,41 +172,85 @@ class MailboxClient:
             except Exception as exc:
                 log.error("%s::%s: %s", self.job_name, folder_name, exc)
 
-    def folder_backup(self, folder_name:str, store:cas, since:Optional[datetime]=None, callback:Optional[Callable[dict]]=None) -> Tuple[int, int]:
+    def folder_backup(
+        self,
+        folder_name: str,
+        store: cas.ContentAdressedStorage,
+        since: datetime | None = None,
+        callback: collections.abc.Callable | None = None,
+    ) -> tuple[int, int]:
         with self.lock:
             counter = 0
-            folder_info = self.conn.select_folder(folder_name, readonly=not self.delete_after_export)
+            folder_info = self.conn.select_folder(
+                folder_name, readonly=not self.delete_after_export
+            )
             try:
-                items_in_folder = folder_info[b'EXISTS']
+                items_in_folder = folder_info[b"EXISTS"]
                 if since:
                     start_date = since - timedelta(days=1)
                     query = ["NOT", "DELETED", "SINCE", start_date.date()]
                 else:
                     query = ["NOT", "DELETED"]
-                message_ids = self.conn.search(query)
+                message_ids = self.conn.search(query)  # type: ignore
                 items_found = len(message_ids)
-                if items_found!=items_in_folder:
-                    log.info("%s::%s: found %s/%s messages", self.job_name, folder_name, items_found, items_in_folder)
+                if items_found != items_in_folder:
+                    log.info(
+                        "%s::%s: found %s/%s messages",
+                        self.job_name,
+                        folder_name,
+                        items_found,
+                        items_in_folder,
+                    )
                 else:
-                    log.info("%s::%s: found %s messages", self.job_name, folder_name, items_found)
+                    log.info(
+                        "%s::%s: found %s messages", self.job_name, folder_name, items_found
+                    )
                 for msg_id, msg, _ in self._walk_folder(folder_name, message_ids, delete=False):
                     if self.exchange_journal:
                         msg = mailutils.unwrap_exchange_journal_item(msg)
                         if msg is None:
                             if self.error_folder:
-                                log.warning("%s::%s[%s]: not a journal item, moving to error folder", self.job_name, folder_name, msg_id)
+                                log.warning(
+                                    "%s::%s[%s]: not a journal item, moving to error folder",
+                                    self.job_name,
+                                    folder_name,
+                                    msg_id,
+                                )
                                 self.move_message(msg_id, self.error_folder)
                             else:
-                                log.warning("%s::%s[%s]: not a journal item, skipping", self.job_name, folder_name, msg_id)
+                                log.warning(
+                                    "%s::%s[%s]: not a journal item, skipping",
+                                    self.job_name,
+                                    folder_name,
+                                    msg_id,
+                                )
                             continue
                     result, store_id, _path = store.add(msg)
-                    log.info("%s::%s[%s]: %s: id=%s", self.job_name, folder_name, msg_id, result, store_id)
+                    log.info(
+                        "%s::%s[%s]: %s: id=%s",
+                        self.job_name,
+                        folder_name,
+                        msg_id,
+                        result,
+                        store_id,
+                    )
                     if callback:
                         try:
-                            md = self._collect_metadata(folder_name=folder_name, msg_id=msg_id, store_id=store_id, msg=msg)
+                            md = self._collect_metadata(
+                                folder_name=folder_name,
+                                msg_id=msg_id,
+                                store_id=store_id,
+                                msg=msg,
+                            )
                             callback(md)
                         except Exception as exc:
-                            log.exception("%s::%s[%s]: Error in callback: %s", self.job_name, folder_name, msg_id, exc)
+                            log.exception(
+                                "%s::%s[%s]: Error in callback: %s",
+                                self.job_name,
+                                folder_name,
+                                msg_id,
+                                exc,
+                            )
                             continue
                     if self.delete_after_export:
                         self.conn.delete_messages(msg_id)
@@ -212,31 +268,53 @@ class MailboxClient:
                 self._clear_folder(self.trash_folder)
             return counter, len(message_ids)
 
-    def full_backup(self, store:cas, since:Optional[datetime]=None, callback:Optional[callable]=None):
+    def full_backup(
+        self,
+        store: cas.ContentAdressedStorage,
+        since: datetime | None = None,
+        callback: collections.abc.Callable | None = None,
+    ):
         for folder in self.folders():
             try:
-                self.folder_backup(folder_name=folder[2], store=store, since=since, callback=callback)
-            except:
+                self.folder_backup(
+                    folder_name=folder[2], store=store, since=since, callback=callback
+                )
+            except Exception as exc:
+                log.error("%s::%s: backup failed: %s", self.job_name, folder[2], exc)
                 continue
 
-    def get_messages(self, folder_name:str, since:Optional[datetime]=None) -> Generator[Tuple[bytes, datetime], None, None]:
+    def get_messages(
+        self, folder_name: str, since: datetime | None = None
+    ) -> collections.abc.Generator[tuple[int, datetime | None, bytes], None, None]:
         with self.lock:
             counter = 0
-            folder_info = self.conn.select_folder(folder_name, readonly=not self.delete_after_export)
+            folder_info = self.conn.select_folder(
+                folder_name, readonly=not self.delete_after_export
+            )
             try:
-                items_in_folder = folder_info[b'EXISTS']
+                items_in_folder = folder_info[b"EXISTS"]
                 if since:
                     start_date = since - timedelta(days=1)
                     query = ["NOT", "DELETED", "SINCE", start_date.date()]
                 else:
                     query = ["NOT", "DELETED"]
-                message_ids = self.conn.search(query)
+                message_ids = self.conn.search(query)  # type: ignore
                 items_found = len(message_ids)
-                if items_found!=items_in_folder:
-                    log.info("%s::%s: found %s/%s messages", self.job_name, folder_name, items_found, items_in_folder)
+                if items_found != items_in_folder:
+                    log.info(
+                        "%s::%s: found %s/%s messages",
+                        self.job_name,
+                        folder_name,
+                        items_found,
+                        items_in_folder,
+                    )
                 else:
-                    log.info("%s::%s: found %s messages", self.job_name, folder_name, items_found)
-                for msg_id, msg, msg_date in self._walk_folder(folder_name, message_ids, delete=False):
+                    log.info(
+                        "%s::%s: found %s messages", self.job_name, folder_name, items_found
+                    )
+                for msg_id, msg, msg_date in self._walk_folder(
+                    folder_name, message_ids, delete=False
+                ):
                     log.info("%s::%s[%s]: fetched", self.job_name, folder_name, msg_id)
                     yield msg_id, msg_date, msg
                     if self.delete_after_export:
@@ -251,30 +329,32 @@ class MailboxClient:
             finally:
                 self.conn.unselect_folder()
 
-    def save_message(self, msg:bytes, folder_name:str, date:datetime=None):
+    def save_message(self, msg: bytes, folder_name: str, date: datetime | None = None):
         with self.lock:
             if not self.conn.folder_exists(folder_name):
                 self.conn.create_folder(folder_name)
             self.conn.append(folder_name, msg, msg_time=date)
 
-    def move_message(self, msg_id:int, folder_name:str):
+    def move_message(self, msg_id: int, folder_name: str):
         with self.lock:
             if self.move_cap:
                 if not self.conn.folder_exists(folder_name):
                     self.conn.create_folder(folder_name)
                 self.conn.move(msg_id, folder_name)
             else:
-                raise MailboxError("IMAP server has no MOVE capability, moving messages is not supported")
+                raise MailboxError(
+                    "IMAP server has no MOVE capability, moving messages is not supported"
+                )
 
-    def delete_message(self, msg_id:int, expunge:bool=False):
+    def delete_message(self, msg_id: int, expunge: bool = False):
         with self.lock:
             self.conn.delete_messages(msg_id)
             if expunge:
                 self.conn.expunge(msg_id)
 
-class Mailbox:
 
-    def __init__(self, job:dict):
+class Mailbox:
+    def __init__(self, job: dict):
         self.job = job or {}
         self.job_name = self.job.get("name", ".")
         self._client = None
@@ -307,7 +387,7 @@ class Mailbox:
             self._client = None
 
     @property
-    def client(self) -> MailboxClient:
+    def client(self) -> MailboxClient | None:
         return self._client
 
 
