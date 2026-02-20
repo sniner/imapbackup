@@ -14,6 +14,18 @@ from datetime import datetime, timedelta
 from typing import List, Tuple, Any, Optional, Callable, Generator
 
 import imapclient
+import sys
+
+if sys.version_info >= (3, 14):
+    # Monkeypatch for imapclient 3.1.0 on Python 3.14:
+    # IMAP4WithTimeout.open explicitly sets self.file which is now a property without a setter.
+    # Removing the open method makes it fallback to imaplib.IMAP4.open which works fine.
+    try:
+        import imapclient.imap4
+        if hasattr(imapclient.imap4.IMAP4WithTimeout, 'open'):
+            del imapclient.imap4.IMAP4WithTimeout.open
+    except Exception:
+        pass
 
 from imapbackup import cas, utils, mailutils
 
