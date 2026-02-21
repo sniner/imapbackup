@@ -83,8 +83,38 @@ options:
 
 ## `ib-copy`
 
-This tool is work in progress and not yet usable. Its purpose will be to
-transfer mails between two IMAP mailboxes.
+> [!WARNING]
+> **Experimental / Proof of Concept**
+> This tool is currently in an early experimental stage (PoC) and may have hardcoded limitations (e.g., the `--idle` mode only watches the `INBOX`). Use with caution and always test with non-critical data first!
+
+This tool can be used to copy or continually transfer emails from one IMAP mailbox to another.
+
+```console
+$ ib-copy copy --job copy.job
+```
+
+It requires a job configuration file containing two accounts, one marked with `role: source` and the other with `role: destination`. For example:
+
+```yaml
+source_account:
+    server: "imap.source.com"
+    username: "john@source.com"
+    password: "..."
+    role: "source"
+    folders:
+        - INBOX
+    move_to_archive: true
+    archive_folder: "Archive/%Y"
+
+destination_account:
+    server: "imap.destination.com"
+    username: "john@destination.com"
+    password: "..."
+    role: "destination"
+```
+
+There is also an `--idle` flag (`ib-copy copy --job copy.job --idle`) that will keep the connection open and listen to new incoming emails (currently limited to the `INBOX`), instantly copying them over to the destination. If `move_to_archive` is enabled on the source, copied emails will be moved into `archive_folder` instead of being left in the `INBOX` or deleted.
+
 
 
 ## Mail archive structure
@@ -229,23 +259,4 @@ identifier should match the name of the mailbox in your job file.
 
 ## MS Windows
 
-A short tutorial on how to create an EXE file for Windows.
-
-First, enter the Python environment by starting `CMD.EXE` or PowerShell CLI in
-the project folder.
-
-```console
-C:\> pipenv install --dev
-```
-
-Now install `auto-py-to-exe`:
-
-```console
-C:\> pipenv run pip install auto-py-to-exe
-C:\> auto-py-to-exe
-```
-
-Select the appropriate `py` file from `imapbackup/cli` in "Script Location"
-field. Activate "One File" option and "Console Based". Now press the button
-"CONVERT .PY TO .EXE". You will find the executable in folder `./output`.
-
+Pre-compiled executable `*.exe` files for Windows are automatically built and provided as assets in the [GitHub Releases](https://github.com/sniner/imapbackup/releases) page for every new version. You can download `ib-mailbox.exe`, `ib-archive.exe`, and `ib-copy.exe` directly from there without needing to install Python or any dependencies.

@@ -10,7 +10,7 @@ log = logging.getLogger(__name__)
 
 
 def load(path: pathlib.Path | str) -> list[dict]:
-    with open(path) as f:
+    with open(path, encoding="utf-8-sig") as f:
         cd = yaml.safe_load(f)
     return [{"name": name, **content} for name, content in cd.items()]
 
