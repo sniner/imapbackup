@@ -1,0 +1,307 @@
+"""Tests for imapbackup.jobs with mocked Mailbox and CAS."""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import Any
+from unittest.mock import MagicMock, patch, call
+
+import pytest
+
+from imapbackup import cas, conf, jobs, storedb
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+DUMMY_EML = b"""From: sender@example.com
+To: recipient@example.com
+Subject: Test
+Message-ID: <test@example.com>
+Date: Wed, 20 Feb 2026 12:00:00 +0100
+
+Body.
+"""
+
+
+def _make_job(**overrides: Any) -> conf.JobConfig:
+    defaults: dict[str, Any] = dict(
+        name="test-job",
+        server="imap.example.com",
+        username="user",
+        password="pass",
+    )
+    defaults.update(overrides)
+    return conf.JobConfig(**defaults)
+
+
+def _make_mock_client():
+    """Create a mock MailboxClient."""
+    client = MagicMock()
+    client.job_name = "test-job"
+    client.folders.return_value = iter(["INBOX"])
+    return client
+
+
+# ---------------------------------------------------------------------------
+# backup
+# ---------------------------------------------------------------------------
+
+class TestBackup:
+    def test_backup_with_db(self, tmp_path):
+        job = _make_job(with_db=True, folders=["INBOX"])
+        mock_client = _make_mock_client()
+        mock_client.folder_backup.return_value = 5
+
+        with patch("imapbackup.jobs.mailbox.Mailbox") as mock_mb_cls:
+            mock_mb_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
+            mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
+
+            jobs.backup(job, tmp_path)
+
+        mock_client.folder_backup.assert_called_once()
+        call_kwargs = mock_client.folder_backup.call_args
+        assert call_kwargs.kwargs.get("callback") is not None or call_kwargs[1].get("callback") is not None
+
+        # DB should exist
+        assert (tmp_path / "store.db").exists()
+
+    def test_backup_without_db(self, tmp_path):
+        job = _make_job(with_db=False, folders=["INBOX", "Sent"])
+        mock_client = _make_mock_client()
+        mock_client.folder_backup.return_value = 0
+
+        with patch("imapbackup.jobs.mailbox.Mailbox") as mock_mb_cls:
+            mock_mb_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
+            mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
+
+            jobs.backup(job, tmp_path)
+
+        assert mock_client.folder_backup.call_count == 2
+        assert not (tmp_path / "store.db").exists()
+
+    def test_backup_without_db_no_folders(self, tmp_path):
+        job = _make_job(with_db=False)  # folders=None -> full_backup
+        mock_client = _make_mock_client()
+        mock_client.full_backup.return_value = None
+
+        with patch("imapbackup.jobs.mailbox.Mailbox") as mock_mb_cls:
+            mock_mb_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
+            mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
+
+            jobs.backup(job, tmp_path)
+
+        mock_client.full_backup.assert_called_once()
+
+    def test_backup_incremental_uses_snapshot(self, tmp_path):
+        job = _make_job(with_db=True, folders=["INBOX"], incremental=True)
+        mock_client = _make_mock_client()
+        mock_client.folder_backup.return_value = 0
+
+        # Pre-populate a snapshot
+        with storedb.StoreDatabase(tmp_path / "store.db") as db:
+            mb_id = db.add_mailbox("test-job")
+            label_id = db.add_label("INBOX")
+            snapshot_date = datetime(2026, 2, 1, tzinfo=timezone.utc)
+            db.set_snapshot(mb_id, label_id, date=snapshot_date)
+
+        with patch("imapbackup.jobs.mailbox.Mailbox") as mock_mb_cls:
+            mock_mb_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
+            mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
+
+            jobs.backup(job, tmp_path)
+
+        call_kwargs = mock_client.folder_backup.call_args
+        since = call_kwargs.kwargs.get("since") or call_kwargs[1].get("since")
+        assert since == snapshot_date
+
+    def test_backup_non_incremental_ignores_snapshot(self, tmp_path):
+        job = _make_job(with_db=True, folders=["INBOX"], incremental=False)
+        mock_client = _make_mock_client()
+        mock_client.folder_backup.return_value = 0
+
+        with patch("imapbackup.jobs.mailbox.Mailbox") as mock_mb_cls:
+            mock_mb_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
+            mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
+
+            jobs.backup(job, tmp_path)
+
+        call_kwargs = mock_client.folder_backup.call_args
+        since = call_kwargs.kwargs.get("since") or call_kwargs[1].get("since")
+        assert since is None
+
+    def test_backup_db_stores_metadata(self, tmp_path):
+        job = _make_job(with_db=True, folders=["INBOX"])
+        mock_client = _make_mock_client()
+
+        def fake_folder_backup(folder_name, store, since=None, callback=None):
+            if callback:
+                callback({
+                    "store_id": "abc123",
+                    "email_id": "<test@example.com>",
+                    "date": datetime(2026, 2, 20, tzinfo=timezone.utc),
+                    "subject": "Test",
+                    "labels": ["INBOX"],
+                    "sender": ["sender@example.com"],
+                    "recipients": ["recipient@example.com"],
+                })
+            return 1
+
+        mock_client.folder_backup.side_effect = fake_folder_backup
+
+        with patch("imapbackup.jobs.mailbox.Mailbox") as mock_mb_cls:
+            mock_mb_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
+            mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
+
+            jobs.backup(job, tmp_path)
+
+        # Verify metadata was stored
+        with storedb.StoreDatabase(tmp_path / "store.db") as db:
+            row = db.execute("SELECT * FROM message WHERE store_id='abc123'").fetchone()
+            assert row is not None
+
+
+# ---------------------------------------------------------------------------
+# folder_list
+# ---------------------------------------------------------------------------
+
+class TestFolderList:
+    def test_prints_folders(self, capsys):
+        job = _make_job()
+        mock_client = _make_mock_client()
+        mock_client.folders.return_value = iter(["INBOX", "Sent", "Archive"])
+
+        with patch("imapbackup.jobs.mailbox.Mailbox") as mock_mb_cls:
+            mock_mb_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
+            mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
+
+            jobs.folder_list(job)
+
+        output = capsys.readouterr().out
+        assert "test-job::INBOX" in output
+        assert "test-job::Sent" in output
+        assert "test-job::Archive" in output
+
+
+# ---------------------------------------------------------------------------
+# copy
+# ---------------------------------------------------------------------------
+
+class TestCopy:
+    def test_copy_basic(self):
+        source = _make_job(name="src", role="source", folders=["INBOX"])
+        dest = _make_job(name="dst", role="destination")
+
+        mock_src_client = _make_mock_client()
+        mock_src_client.job_name = "src"
+        mock_dst_client = _make_mock_client()
+        mock_dst_client.job_name = "dst"
+
+        # get_messages returns (msg_id, msg_date, msg)
+        msg_date = datetime(2026, 2, 20, tzinfo=timezone.utc)
+        mock_src_client.get_messages.return_value = iter([(1, msg_date, DUMMY_EML)])
+
+        with patch("imapbackup.jobs.mailbox.Mailbox") as mock_mb_cls:
+            clients = iter([mock_src_client, mock_dst_client])
+            mock_mb_cls.return_value.__enter__ = MagicMock(side_effect=lambda: next(clients))
+            mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
+
+            jobs.copy(source, dest)
+
+        mock_dst_client.save_message.assert_called_once_with(DUMMY_EML, "INBOX", date=msg_date)
+
+    def test_copy_with_archive(self):
+        source = _make_job(
+            name="src", role="source", folders=["INBOX"],
+            move_to_archive=True, archive_folder="Archive/%Y/%m",
+        )
+        dest = _make_job(name="dst", role="destination")
+
+        mock_src_client = _make_mock_client()
+        mock_dst_client = _make_mock_client()
+
+        msg_date = datetime(2026, 2, 20, tzinfo=timezone.utc)
+        mock_src_client.get_messages.return_value = iter([(1, msg_date, DUMMY_EML)])
+
+        with patch("imapbackup.jobs.mailbox.Mailbox") as mock_mb_cls:
+            clients = iter([mock_src_client, mock_dst_client])
+            mock_mb_cls.return_value.__enter__ = MagicMock(side_effect=lambda: next(clients))
+            mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
+
+            jobs.copy(source, dest)
+
+        # Should have attempted to move to archive
+        mock_src_client.move_message.assert_called_once()
+
+    def test_copy_missing_archive_folder_raises(self):
+        source = _make_job(
+            name="src", role="source",
+            move_to_archive=True, archive_folder=None,
+        )
+        dest = _make_job(name="dst", role="destination")
+
+        with pytest.raises(jobs.JobError, match="archive_folder"):
+            jobs.copy(source, dest)
+
+    def test_copy_default_inbox(self):
+        source = _make_job(name="src", role="source")  # folders=None -> default INBOX
+        dest = _make_job(name="dst", role="destination")
+
+        mock_src_client = _make_mock_client()
+        mock_dst_client = _make_mock_client()
+        mock_src_client.get_messages.return_value = iter([])
+
+        with patch("imapbackup.jobs.mailbox.Mailbox") as mock_mb_cls:
+            clients = iter([mock_src_client, mock_dst_client])
+            mock_mb_cls.return_value.__enter__ = MagicMock(side_effect=lambda: next(clients))
+            mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
+
+            jobs.copy(source, dest)
+
+        mock_src_client.get_messages.assert_called_once_with("INBOX")
+
+
+# ---------------------------------------------------------------------------
+# update_db_from_archive
+# ---------------------------------------------------------------------------
+
+class TestUpdateDbFromArchive:
+    def test_rebuilds_db(self, tmp_path):
+        # Create a CAS with a message
+        store = cas.ContentAddressedStorage(tmp_path, suffix=".eml")
+        store.add(DUMMY_EML)
+
+        jobs.update_db_from_archive(tmp_path, mailbox="test")
+
+        with storedb.StoreDatabase(tmp_path / "store.db") as db:
+            rows = db.execute("SELECT * FROM message").fetchall()
+            assert len(rows) == 1
+
+    def test_rebuilds_db_without_mailbox(self, tmp_path):
+        store = cas.ContentAddressedStorage(tmp_path, suffix=".eml")
+        store.add(DUMMY_EML)
+
+        jobs.update_db_from_archive(tmp_path)
+
+        with storedb.StoreDatabase(tmp_path / "store.db") as db:
+            rows = db.execute("SELECT * FROM message").fetchall()
+            assert len(rows) == 1
+            # No mailbox assignment
+            mm_rows = db.execute("SELECT * FROM message_mailbox").fetchall()
+            assert len(mm_rows) == 0
+
+
+# ---------------------------------------------------------------------------
+# _format_archive_folder
+# ---------------------------------------------------------------------------
+
+class TestFormatArchiveFolder:
+    def test_strftime_expansion(self):
+        result = jobs._format_archive_folder("Archive/%Y")
+        year = datetime.now().strftime("%Y")
+        assert result == f"Archive/{year}"
+
+    def test_plain_string(self):
+        result = jobs._format_archive_folder("Archive/Fixed")
+        assert result == "Archive/Fixed"

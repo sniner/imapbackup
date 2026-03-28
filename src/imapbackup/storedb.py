@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import collections.abc
 import functools
 import logging
 import pathlib
 import sqlite3
 import threading
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 log = logging.getLogger(__name__)
@@ -29,7 +30,7 @@ class StoreDatabase:
         self.client.setup()
         return self.client
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(self, exc_type: type | None, exc_val: BaseException | None, exc_tb: Any) -> None:
         if self.dbconn:
             self.dbconn.close()
             self.dbconn = None
@@ -43,7 +44,7 @@ class DatabaseConnection:
         self._transaction = 0
 
     @contextmanager
-    def transaction(self):
+    def transaction(self) -> collections.abc.Generator[DatabaseConnection, None, None]:
         with self.lock:
             outer = self._transaction == 0
             self._transaction += 1
@@ -63,20 +64,20 @@ class DatabaseConnection:
         with self.lock:
             return self.dbconn.execute(statement, *args)
 
-    def commit(self):
+    def commit(self) -> None:
         with self.lock:
             if self._transaction == 0:
                 self.dbconn.commit()
 
-    def rollback(self):
+    def rollback(self) -> None:
         raise RollbackException()
 
-    def setup(self):
+    def setup(self) -> None:
         pass
 
 
 class StoreDatabaseConnection(DatabaseConnection):
-    def setup(self):
+    def setup(self) -> None:
         with self.transaction():
             self.execute("""
                 CREATE TABLE IF NOT EXISTS mailbox (
@@ -177,11 +178,13 @@ class StoreDatabaseConnection(DatabaseConnection):
                 FOREIGN KEY(address_id) REFERENCES address(address_id),
                 UNIQUE(message_id, address_id) ON CONFLICT IGNORE)
             """)
+            self.execute("DROP INDEX IF EXISTS idx_message_recipient_1")
+            self.execute("DROP INDEX IF EXISTS idx_message_recipient_2")
             self.execute(
-                "CREATE INDEX IF NOT EXISTS idx_message_recipient_1 ON message_sender(message_id)"
+                "CREATE INDEX IF NOT EXISTS idx_message_recipient_1 ON message_recipient(message_id)"
             )
             self.execute(
-                "CREATE INDEX IF NOT EXISTS idx_message_recipient_2 ON message_sender(address_id)"
+                "CREATE INDEX IF NOT EXISTS idx_message_recipient_2 ON message_recipient(address_id)"
             )
 
             self.execute("""
@@ -285,21 +288,12 @@ class StoreDatabaseConnection(DatabaseConnection):
                 self.assign_message_to_mailbox(msg_id, mailbox_id)
             return msg_id
 
-    def assign_message_to_mailbox(self, message_id: int, mailbox_id: int):
+    def assign_message_to_mailbox(self, message_id: int, mailbox_id: int) -> None:
         with self.transaction():
             self.execute(
                 "INSERT OR IGNORE INTO message_mailbox(message_id, mailbox_id) VALUES (?, ?)",
                 (message_id, mailbox_id),
             )
-
-    def get_message(self, mailbox_id: int, store_id: str) -> int:
-        return self.execute(
-            "SELECT message_id FROM message WHERE mailbox_id=? AND store_id=?",
-            (
-                mailbox_id,
-                store_id,
-            ),
-        ).fetchone()[0]
 
     def get_message_labels(self, message_id: int) -> list[str]:
         return [
@@ -320,7 +314,7 @@ class StoreDatabaseConnection(DatabaseConnection):
             ).fetchall()
         ]
 
-    def add_message_labels(self, message_id: int, *label_names: str):
+    def add_message_labels(self, message_id: int, *label_names: str) -> None:
         for label in label_names:
             label_id = self.add_label(label)
             self.execute(
@@ -328,7 +322,7 @@ class StoreDatabaseConnection(DatabaseConnection):
                 (message_id, label_id),
             )
 
-    def update_message_labels(self, message_id: int, *label_names: str):
+    def update_message_labels(self, message_id: int, *label_names: str) -> None:
         with self.transaction():
             current = set()
             for label in label_names:
@@ -345,7 +339,7 @@ class StoreDatabaseConnection(DatabaseConnection):
                         (message_id, label_id),
                     )
 
-    def add_message_sender(self, message_id: int, *sender: str):
+    def add_message_sender(self, message_id: int, *sender: str) -> None:
         with self.transaction():
             for addr in sender:
                 addr_id = self.add_address(addr)
@@ -354,7 +348,7 @@ class StoreDatabaseConnection(DatabaseConnection):
                     (message_id, addr_id),
                 )
 
-    def add_message_recipients(self, message_id: int, *recipients: str):
+    def add_message_recipients(self, message_id: int, *recipients: str) -> None:
         with self.transaction():
             for addr in recipients:
                 addr_id = self.add_address(addr)
@@ -369,9 +363,9 @@ class StoreDatabaseConnection(DatabaseConnection):
         ).fetchone()
         return dict(row) if row else None
 
-    def set_snapshot(self, mailbox_id: int, label_id: int, date: datetime | None = None):
+    def set_snapshot(self, mailbox_id: int, label_id: int, date: datetime | None = None) -> None:
         if date is None:
-            date = datetime.now()
+            date = datetime.now(timezone.utc)
         isodate = date.isoformat()
         # NB: does work because of ON CONFLICT REPLACE
         with self.transaction():
@@ -380,7 +374,7 @@ class StoreDatabaseConnection(DatabaseConnection):
                 (mailbox_id, label_id, isodate),
             )
 
-    def delete_snapshot(self, mailbox_id: int, label_id: int | None = None):
+    def delete_snapshot(self, mailbox_id: int, label_id: int | None = None) -> None:
         with self.transaction():
             if label_id:
                 self.execute(
@@ -406,7 +400,7 @@ if __name__ == "__main__":
         msg = db.add_message(
             "12345678901234567890",
             "<hulla@example.org>",
-            datetime.now(),
+            datetime.now(timezone.utc),
             mailbox_id=mb,
             subject="Test",
         )
@@ -416,5 +410,3 @@ if __name__ == "__main__":
         print(msg, db.get_message_labels(msg))
         db.update_message_labels(msg, "Private", "INBOX")
         print(msg, db.get_message_labels(msg))
-
-# vim: set et sw=4 ts=4:

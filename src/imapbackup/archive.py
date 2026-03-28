@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import collections.abc
 import logging
 import os
 import pathlib
@@ -11,20 +12,21 @@ log = logging.getLogger(__name__)
 
 class MailArchive:
     def __init__(self, root_dir: pathlib.Path):
-        self.root_dir = root_dir or "."
+        self.root_dir = root_dir
 
-    def walk(self):
-        """E-Mail-Dateien im Export-Archiv lokalisieren."""
+    def walk(self) -> collections.abc.Generator[pathlib.Path, None, None]:
+        """Yield paths to all .eml files in the archive."""
         for path, _, files in os.walk(self.root_dir):
             for eml in [pathlib.Path(path, f) for f in files if f.endswith(".eml")]:
                 yield eml
 
-    def archive_to_cas(self, store: cas.ContentAdressedStorage, compression=False, move=False):
+    def archive_to_cas(self, store: cas.ContentAddressedStorage, move: bool = False) -> None:
+        """Import all emails into the content-addressed store."""
         for eml in self.walk():
             try:
                 with open(eml, "rb") as f:
                     result, uid, _ = store.add(f)
-            except Exception as exc:
+            except OSError as exc:
                 log.error("Error adding %s to store: %s", eml, exc)
                 continue
             else:
@@ -33,8 +35,8 @@ class MailArchive:
                     eml.unlink()
                     log.debug("%s: file deleted", eml)
 
-    def addresses(self):
-        """Alle eindeutigen Adressen aus den E-Mails im Archiv extrahieren."""
+    def addresses(self) -> collections.abc.Generator[tuple[str, str], None, None]:
+        """Yield unique sender/recipient addresses from all emails in the archive."""
         addrs = set()
         for eml in self.walk():
             with open(eml, "rb") as f:
@@ -49,7 +51,7 @@ class MailArchive:
                         yield ">", addr
 
     def stats(self) -> tuple[int, int]:
-        """Anzahl Mails und die Gesamtgröße im Export-Archiv bestimmen."""
+        """Return (count, total_size_in_bytes) for all emails in the archive."""
         size = 0
         count = 0
         for eml in self.walk():
@@ -59,8 +61,8 @@ class MailArchive:
 
 
 class DocuwareMailArchive(MailArchive):
-    def walk(self):
-        """E-Mail-Dateien im Docuware-Archiv lokalisieren."""
+    def walk(self) -> collections.abc.Generator[pathlib.Path, None, None]:
+        """Yield paths to .eml files in a Docuware archive (one per directory, largest wins)."""
         for path, _, files in os.walk(self.root_dir):
             eml = [pathlib.Path(path, f) for f in files if f.endswith(".eml")]
             if len(eml) > 1:
@@ -70,6 +72,3 @@ class DocuwareMailArchive(MailArchive):
             else:
                 continue
             yield eml_file
-
-
-# vim: set et sw=4 ts=4:

@@ -8,7 +8,9 @@
 __pycache__/
 *.log
 *.job
+*.toml
 !example.job
+!example.toml
 
 /archive
 /testarchive

@@ -1,16 +1,16 @@
+"""Back up emails from IMAP mailboxes to a local content-addressed archive."""
+
 import argparse
 import logging
 import pathlib
-import sys
 
-import yaml
-
-from imapbackup import jobs
+from imapbackup import conf, jobs
+from imapbackup.cli import setup_logger
 
 log = logging.getLogger(__name__)
 
 
-def parse_arguments():
+def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         formatter_class=argparse.RawDescriptionHelpFormatter, description=__doc__
     )
@@ -25,18 +25,27 @@ def parse_arguments():
         action="store_true",
         help="Set log level to DEBUG",
     )
+    parser.add_argument(
+        "--allow-exec",
+        action="store_true",
+        help="Allow execution of _cmd fields in configuration file",
+    )
+    parser.add_argument(
+        "--config",
+        type=pathlib.Path,
+        help="Configuration file (YAML or TOML)",
+    )
+    parser.add_argument(
+        "--job",
+        action="append",
+        help="Run only the named job(s), may be repeated",
+    )
 
     subparsers = parser.add_subparsers(dest="subcommand")
 
-    list_parser = subparsers.add_parser(
-        "list",
-        description="List available folders on imap server",
-    )
-    list_parser.add_argument(
-        "--job",
-        type=pathlib.Path,
-        required=True,
-        help="YAML file with job descriptions",
+    subparsers.add_parser(
+        "folders",
+        description="List available folders on IMAP server",
     )
 
     backup_parser = subparsers.add_parser(
@@ -44,57 +53,54 @@ def parse_arguments():
         description="Backup mails to local storage",
     )
     backup_parser.add_argument(
-        "--job",
-        type=pathlib.Path,
-        required=True,
-        help="YAML file with job descriptions",
+        "--compress",
+        action="store_true",
+        help="Compress stored emails with zstd",
     )
     backup_parser.add_argument(
         "destination",
         type=pathlib.Path,
-        nargs="?",
-        default=pathlib.Path("./backup"),
         help="Destination base directory",
     )
 
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.subcommand is None:
+        parser.print_help()
+        raise SystemExit(2)
+    if args.config is None:
+        parser.error("the following arguments are required: --config")
+    return args
 
 
-def run_job(job: dict, args: argparse.Namespace):
-    log.info(f"Job item: {job['name']}")
+def run_job(job: conf.JobConfig, args: argparse.Namespace, config: conf.Config) -> None:
+    log.info(f"Job item: {job.name}")
 
-    if args.subcommand == "list":
+    if args.subcommand == "folders":
         jobs.folder_list(job)
     elif args.subcommand == "backup":
-        jobs.backup(job, args.destination)
+        compress = args.compress or config.compress
+        jobs.backup(job, args.destination, compress=compress)
 
 
-def setup_logger(loglevel=logging.INFO, logfile=None):
-    logger_format = "%(asctime)s %(levelname)s -- %(message)s"
-    if logfile:
-        logging.basicConfig(filename=logfile, level=loglevel, format=logger_format)
-    else:
-        logging.basicConfig(stream=sys.stderr, level=loglevel, format=logger_format)
-    return logging.getLogger(__name__)
-
-
-def main():
+def main() -> None:
     args = parse_arguments()
 
-    log = setup_logger(
-        logfile=args.logfile, loglevel=logging.DEBUG if args.verbose else logging.INFO
+    setup_logger(
+        logfile=args.logfile,
+        loglevel=logging.DEBUG if args.verbose else logging.INFO,
     )
-    logging.getLogger("imapclient").setLevel(logging.WARNING)
-    logging.getLogger("imapbackup.cas").setLevel(logging.INFO)
     log.info("START")
 
     try:
-        with open(args.job) as j:
-            jobs = yaml.safe_load(j)
-
-        for job_name, job in jobs.items():
-            job["name"] = job_name
-            run_job(job, args)
+        config = conf.load(args.config, allow_exec=args.allow_exec)
+        selected = config.jobs
+        if args.job:
+            selected = [j for j in selected if j.name in args.job]
+            unknown = set(args.job) - {j.name for j in selected}
+            for name in unknown:
+                log.error("Unknown job: %s", name)
+        for job in selected:
+            run_job(job, args, config)
     except Exception as exc:
         log.exception("Fatal error: %s", exc)
     except KeyboardInterrupt:
@@ -105,6 +111,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-# vim: set et sw=4 ts=4:

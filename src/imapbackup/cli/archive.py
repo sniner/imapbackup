@@ -1,16 +1,18 @@
+"""Manage and maintain the local email archive (import, compress, statistics)."""
+
 from __future__ import annotations
 
 import argparse
 import logging
 import pathlib
-import sys
 
 from imapbackup import archive, cas, jobs
+from imapbackup.cli import setup_logger
 
 log = logging.getLogger(__name__)
 
 
-def parse_arguments():
+def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         formatter_class=argparse.RawDescriptionHelpFormatter,
         description=__doc__,
@@ -44,6 +46,11 @@ def parse_arguments():
         help="Move emails, i.e. remove emails from source after backup",
     )
     import_parser.add_argument(
+        "--compress",
+        action="store_true",
+        help="Compress stored emails with zstd",
+    )
+    import_parser.add_argument(
         "source",
         type=pathlib.Path,
         help="Directory from which you want to copy/move the mails",
@@ -65,6 +72,26 @@ def parse_arguments():
         help="Archive directory",
     )
 
+    compress_parser = subparsers.add_parser(
+        "compress",
+        description="Compress uncompressed files in archive with zstd",
+    )
+    compress_parser.add_argument(
+        "source",
+        type=pathlib.Path,
+        help="Email archive directory",
+    )
+
+    decompress_parser = subparsers.add_parser(
+        "decompress",
+        description="Decompress compressed files in archive",
+    )
+    decompress_parser.add_argument(
+        "source",
+        type=pathlib.Path,
+        help="Email archive directory",
+    )
+
     dbupd_parser = subparsers.add_parser(
         "db-from-archive",
         description="Update metadata database by reading all archive items",
@@ -80,25 +107,17 @@ def parse_arguments():
         help="Email archive directory",
     )
 
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.subcommand is None:
+        parser.print_help()
+        raise SystemExit(2)
+    return args
 
 
-def setup_logger(loglevel=logging.INFO, logfile=None):
-    logger_format = "%(asctime)s %(levelname)s -- %(message)s"
-
-    if logfile:
-        logging.basicConfig(filename=logfile, level=loglevel, format=logger_format)
-    else:
-        logging.basicConfig(stream=sys.stderr, level=loglevel, format=logger_format)
-    logger = logging.getLogger(__name__)
-    logger.info("START")
-    return logger
-
-
-def run():
+def run() -> None:
     args = parse_arguments()
 
-    log = setup_logger(
+    setup_logger(
         logfile=args.logfile,
         loglevel=logging.DEBUG
         if args.verbose
@@ -106,29 +125,47 @@ def run():
         if args.logfile
         else logging.WARNING,
     )
-    logging.getLogger("imapbackup.cas").setLevel(logging.INFO)
+    log.info("START")
 
     def _archive(path: pathlib.Path) -> archive.MailArchive:
-        return (archive.DocuwareMailArchive if args.docuware else archive.MailArchive)(path)
+        docuware = getattr(args, "docuware", False)
+        return (archive.DocuwareMailArchive if docuware else archive.MailArchive)(path)
 
     if args.subcommand == "stats":
         count, size = _archive(args.source).stats()
-        print(f"{args.source}: {count} emails in archive, {size:,} bytes total")
+        units = ["bytes", "KiB", "MiB", "GiB", "TiB"]
+        hr_size = float(size)
+        unit = units[0]
+        for unit in units:
+            if hr_size < 1024 or unit == units[-1]:
+                break
+            hr_size /= 1024
+        print(f"{args.source}: {count:,} emails, {hr_size:.1f} {unit} total")
     elif args.subcommand == "addresses":
         for where, addr in _archive(args.source).addresses():
             print(where, addr)
     elif args.subcommand == "import":
         source = _archive(args.source)
-        destination = cas.ContentAdressedStorage(args.destination, suffix=".eml")
+        destination = cas.ContentAddressedStorage(
+            args.destination, suffix=".eml", compress=args.compress
+        )
         try:
             source.archive_to_cas(destination, move=args.move)
         except Exception as exc:
             log.error("Backup failed: %s", exc)
+    elif args.subcommand == "compress":
+        store = cas.ContentAddressedStorage(args.source, suffix=".eml")
+        compressed, skipped = store.compress_all()
+        print(f"{args.source}: {compressed:,} files compressed, {skipped:,} already compressed")
+    elif args.subcommand == "decompress":
+        store = cas.ContentAddressedStorage(args.source, suffix=".eml")
+        decompressed, skipped = store.decompress_all()
+        print(f"{args.source}: {decompressed:,} files decompressed, {skipped:,} already plain")
     elif args.subcommand == "db-from-archive":
         jobs.update_db_from_archive(args.source, mailbox=args.mailbox)
 
 
-def main():
+def main() -> None:
     try:
         run()
     except KeyboardInterrupt:
@@ -137,5 +174,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-# vim: set et sw=4 ts=4:

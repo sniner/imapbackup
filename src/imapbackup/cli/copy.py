@@ -1,14 +1,17 @@
+"""Copy emails between IMAP mailboxes."""
+
 import argparse
 import logging
 import pathlib
 import sys
 
 from imapbackup import conf, jobs
+from imapbackup.cli import setup_logger
 
 log = logging.getLogger(__name__)
 
 
-def parse_arguments():
+def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         formatter_class=argparse.RawDescriptionHelpFormatter, description=__doc__
     )
@@ -23,73 +26,69 @@ def parse_arguments():
         action="store_true",
         help="Set log level to DEBUG",
     )
+    parser.add_argument(
+        "--allow-exec",
+        action="store_true",
+        help="Allow execution of _cmd fields in configuration file",
+    )
+    parser.add_argument(
+        "--config",
+        type=pathlib.Path,
+        help="Configuration file (TOML)",
+    )
 
     subparsers = parser.add_subparsers(dest="subcommand")
 
-    list_parser = subparsers.add_parser(
-        "list",
-        description="Show available messages in source mailbox",
-    )
-    list_parser.add_argument(
-        "--job",
-        type=pathlib.Path,
-        required=True,
-        help="YAML file with job descriptions",
+    subparsers.add_parser(
+        "folders",
+        description="Show available folders in source mailbox",
     )
 
-    backup_parser = subparsers.add_parser(
+    copy_parser = subparsers.add_parser(
         "copy",
         description="Copy mails from source to destination mailbox",
     )
-    backup_parser.add_argument(
-        "--job",
-        type=pathlib.Path,
-        required=True,
-        help="YAML file with job descriptions",
-    )
-    backup_parser.add_argument(
+    copy_parser.add_argument(
         "--idle",
         action="store_true",
         help="Keep connected to server",
     )
 
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.subcommand is None:
+        parser.print_help()
+        raise SystemExit(2)
+    if args.config is None:
+        parser.error("the following arguments are required: --config")
+    return args
 
 
-def setup_logger(loglevel=logging.INFO, logfile=None):
-    logger_format = "%(asctime)s %(levelname)s -- %(message)s"
-    if logfile:
-        logging.basicConfig(filename=logfile, level=loglevel, format=logger_format)
-    else:
-        logging.basicConfig(stream=sys.stderr, level=loglevel, format=logger_format)
-    return logging.getLogger(__name__)
-
-
-def main():
-    global log
-
+def main() -> None:
     args = parse_arguments()
 
-    log = setup_logger(
-        logfile=args.logfile, loglevel=logging.DEBUG if args.verbose else logging.INFO
+    setup_logger(
+        logfile=args.logfile,
+        loglevel=logging.DEBUG if args.verbose else logging.INFO,
     )
-    logging.getLogger("imapclient").setLevel(logging.WARNING)
-    logging.getLogger("imapbackup.cas").setLevel(logging.INFO)
     log.info("START")
 
+    if args.config.suffix.lower() != ".toml":
+        print(f"Error: configuration file must be TOML format (.toml), got: {args.config}", file=sys.stderr)
+        sys.exit(1)
+
     try:
-        config = conf.load(args.job)
-        source = conf.find(config, "role", "source")
-        destination = conf.find(config, "role", "destination")
+        config = conf.load(args.config, allow_exec=args.allow_exec)
+        source = conf.find(config.jobs, "role", "source")
+        destination = conf.find(config.jobs, "role", "destination")
 
         if source is None or destination is None:
             log.error("Job missing source or destination role")
             return
 
-        if args.subcommand == "list":
+        if args.subcommand == "folders":
             jobs.folder_list(source)
         elif args.subcommand == "copy":
-            log.info(f"Copy job: {source.get('name', '?')} -> {destination.get('name', '?')}")
+            log.info(f"Copy job: {source.name} -> {destination.name}")
             jobs.copy(source, destination, idle=args.idle)
     except Exception as exc:
         log.error("Fatal error: %s", exc)
@@ -101,6 +100,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-# vim: set et sw=4 ts=4:

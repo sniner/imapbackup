@@ -1,0 +1,31 @@
+[global]
+compress = true
+
+[[job]]
+name = "example.org"
+server = "imap.example.org"
+port = 993
+username = "john.doe@example.org"
+password_cmd = "pass show email/example"
+tls = true
+tls_check_hostname = true
+tls_verify_cert = true
+ignore_folder_flags = ["Junk", "Drafts", "Trash"]
+ignore_folder_names = [".*/IgnoreThisFolder/?.*"]
+
+[[job]]
+name = "exchange.example.org"
+server = "exchange.example.org"
+username = "john.doe@example.org"
+password_cmd = "pass show email/exchange"
+tls_check_hostname = false
+exchange_journal = true
+delete_after_export = true
+folders = ["INBOX"]
+
+[[job]]
+name = "gmail.com"
+server = "imap.gmail.com"
+username = "john.doe@gmail.com"
+password_cmd = "pass show email/gmail"
+folders = ["All Mail"]

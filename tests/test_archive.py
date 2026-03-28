@@ -34,7 +34,7 @@ def test_mail_archive_to_cas(tmp_path, dummy_eml_bytes):
     eml_file.write_bytes(dummy_eml_bytes)
     
     cas_dir = tmp_path / "cas"
-    store = cas.ContentAdressedStorage(root_dir=cas_dir)
+    store = cas.ContentAddressedStorage(root_dir=cas_dir)
     
     arch = archive.MailArchive(root_dir=tmp_path)
     arch.archive_to_cas(store, move=False)

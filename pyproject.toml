@@ -1,19 +1,23 @@
 [project]
 name = "imapbackup"
-version = "0.2.1"
+version = "0.3.0"
 description = "Export and backup tool for IMAP mailboxes"
-authors = [{ name = "Stefan Schönberger", email = "mail@sniner.dev" }]
+authors = [{ name = "Stefan Schönberger", email = "stefan@sniner.dev" }]
 requires-python = ">=3.10"
 dependencies = [
     "imapclient",
     "pyyaml",
+    "zstandard",
 ]
+
+[project.optional-dependencies]
+graph = ["msal", "httpx"]
 
 [dependency-groups]
 dev = [
     "pylint",
     "pytest",
-    "imapbackup",
+    "imapbackup[graph]",
     "basedpyright>=1.38.1",
 ]
 

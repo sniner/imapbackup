@@ -114,18 +114,16 @@ def unwrap_exchange_journal_item(msg: io.IOBase | bytes) -> bytes | None:
     cover = email.parser.BytesParser(policy=email.policy.default).parse(reader)  # type: ignore
     parts = [part for part in cover.walk() if part.get_content_type() == "message/rfc822"]
 
-    # WORKAROUND: From my observations, Microsoft sends the journal messages to
-    # the journal mailbox with the original sender. If DKIM/SPF is active for
-    # the sender domain, this message is rejected by the receiving SMTP server,
-    # after which Microsoft sends an "Undeliverable: <SUBJECT>" mail. This now
-    # contains two RFC822 attachments instead of one, since the original journal
-    # message is appended at the end.
+    # WORKAROUND: Microsoft Exchange sends journal messages using the original
+    # sender address. When DKIM/SPF is configured for the sender's domain, the
+    # receiving SMTP server rejects the message. Microsoft then wraps the
+    # original journal entry in an "Undeliverable: <SUBJECT>" bounce, which
+    # contains two RFC822 attachments instead of one.
     if len(parts) > 0:
-        # If more than one RFC822 attachments are found:
-        # * if this is an 'Undeliverable' message, then part[1] is the right message
-        # * there is a RFC822 message attached to the original mail
-        # It is an 'Undeliverable' message if the first RFC822 attachment mistakenly
-        # starts with 'Content-Type:'.
+        # When multiple RFC822 attachments are present, check whether this is
+        # an "Undeliverable" bounce. In that case the first attachment is a
+        # malformed delivery status (starts with "Content-Type:") and the
+        # actual journal message is the second attachment.
         submsg = rfc822_attachment(parts, 0)
         if submsg and submsg.startswith(b"Content-Type:"):
             submsg = rfc822_attachment(parts, 1)
@@ -133,6 +131,3 @@ def unwrap_exchange_journal_item(msg: io.IOBase | bytes) -> bytes | None:
                 logging.warning("Message was rescued from 'Undeliverable' stupidity")
         return submsg  # type: ignore
     return None
-
-
-# vim: set et sw=4 ts=4:
